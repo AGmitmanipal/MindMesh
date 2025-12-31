@@ -1,5 +1,13 @@
 import { useState, useEffect, useCallback } from "react";
-import type { MemoryNode, ExtensionMessage } from "@shared/extension-types";
+import type {
+  MemoryNode,
+  ExtensionMessage,
+} from "@shared/extension-types";
+
+type AutomationAction = {
+  type: "open_tab" | "close_tab" | "navigate" | "fill_form" | "click" | "extract";
+  data: Record<string, unknown>;
+};
 
 export function useExtension() {
   const [isAvailable, setIsAvailable] = useState(false);
@@ -204,6 +212,13 @@ export function useExtension() {
     });
   }, [extensionId]);
 
+  const executeAction = useCallback(
+    async <T = unknown>(action: AutomationAction) => {
+      return await sendMessage<T>({ type: "EXECUTE_ACTION", payload: { action } } as ExtensionMessage);
+    },
+    [sendMessage]
+  );
+
   const getStats = useCallback(async () => {
     const response = await sendMessage<any>({ type: "GET_STATS", payload: {} });
     console.log("useExtension: getStats response:", response);
@@ -284,6 +299,7 @@ export function useExtension() {
     isAvailable,
     isChecking,
     sendMessage,
+    executeAction,
     getStats,
     getAllPages,
     searchMemory,

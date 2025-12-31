@@ -2,6 +2,8 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { handleDemo } from "./routes/demo";
+import { handleAgentStep } from "./routes/agent-step";
+import { handleAgentEnv } from "./routes/agent-env";
 
 export function createServer() {
   const app = express();
@@ -18,6 +20,8 @@ export function createServer() {
   });
 
   app.get("/api/demo", handleDemo);
+  app.get("/api/agent/env", handleAgentEnv);
+  app.post("/api/agent/step", handleAgentStep);
 
   return app;
 }

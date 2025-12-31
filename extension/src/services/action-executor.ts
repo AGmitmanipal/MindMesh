@@ -180,10 +180,11 @@ export class ActionExecutor {
    */
   private async click(data: Record<string, unknown>): Promise<ActionResult> {
     const tabId = data.tabId as number | undefined;
-    const selector = data.selector as string;
+    const selector = (data.selector as string | undefined) || "";
+    const text = (data.text as string | undefined) || "";
 
-    if (!selector) {
-      return { success: false, message: "Selector is required" };
+    if (!selector && !text) {
+      return { success: false, message: "Selector or text is required" };
     }
 
     try {
@@ -194,13 +195,22 @@ export class ActionExecutor {
 
       await chrome.scripting.executeScript({
         target: { tabId: targetTabId },
-        func: (sel: string) => {
-          const element = document.querySelector(sel) as HTMLElement;
-          if (element) {
-            element.click();
+        func: (sel: string, txt: string) => {
+          const clickEl = (el: Element | null) => (el as HTMLElement | null)?.click?.();
+
+          if (sel) {
+            clickEl(document.querySelector(sel));
+            return;
           }
+
+          const needle = (txt || "").trim().toLowerCase();
+          if (!needle) return;
+
+          const candidates = Array.from(document.querySelectorAll("button,a,input[type=button],input[type=submit],[role=button]"));
+          const match = candidates.find((el) => ((el as HTMLElement).innerText || (el as HTMLElement).textContent || "").toLowerCase().includes(needle));
+          if (match) clickEl(match);
         },
-        args: [selector],
+        args: [selector, text],
       });
 
       return {
@@ -220,16 +230,48 @@ export class ActionExecutor {
    */
   private async extract(data: Record<string, unknown>): Promise<ActionResult> {
     const tabId = data.tabId as number | undefined;
-    const selector = data.selector as string;
-
-    if (!selector) {
-      return { success: false, message: "Selector is required" };
-    }
+    const mode = (data.mode as string | undefined) || "";
+    const selector = (data.selector as string | undefined) || "";
 
     try {
       const targetTabId = tabId || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
       if (!targetTabId) {
         return { success: false, message: "No tab found" };
+      }
+
+      if (mode === "page_snapshot") {
+        const maxChars = Number((data.maxChars as any) ?? 8000);
+        const maxLinks = Number((data.maxLinks as any) ?? 50);
+
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: targetTabId },
+          func: (m: number, l: number) => {
+            const clean = (s: any) => String(s || "").replace(/\s+/g, " ").trim();
+            const url = window.location.href;
+            const title = document.title || "";
+            const text = clean((document.body as any)?.innerText || "").slice(0, Math.max(0, m));
+            const links = Array.from(document.querySelectorAll("a[href]"))
+              .map((a) => {
+                const href = (a as HTMLAnchorElement).href || (a as HTMLAnchorElement).getAttribute("href") || "";
+                const t = clean((a as HTMLAnchorElement).innerText || (a as HTMLAnchorElement).textContent || "");
+                return { href, text: t };
+              })
+              .filter((x) => Boolean(x.href))
+              .slice(0, Math.max(0, l));
+            return { url, title, text, links };
+          },
+          args: [maxChars, maxLinks],
+        });
+
+        return {
+          success: true,
+          message: "Snapshot extracted successfully",
+          data: results[0]?.result,
+        };
+      }
+
+      if (!selector) {
+        return { success: false, message: "Selector is required (or use mode=page_snapshot)" };
       }
 
       const results = await chrome.scripting.executeScript({

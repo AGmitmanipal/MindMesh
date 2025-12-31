@@ -14,7 +14,9 @@ export interface Shortcut {
   keybinding: string;
   action: {
     type: "open_url" | "search" | "fill_form" | "execute_script";
-    data: string | { url: string; query: string; fields?: Record<string, string> };
+    // Some actions are "string-only" (open/search), others can carry structured data.
+    // query is optional so form-fill shortcuts can be generated without a specific query.
+    data: string | { url: string; query?: string; fields?: Record<string, string> };
   };
   usageCount: number;
   lastUsed: number;

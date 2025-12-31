@@ -1,0 +1,112 @@
+[
+  {
+    "id": "seed_001",
+    "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript",
+    "title": "JavaScript | MDN",
+    "readableText": "MDN Web Docs JavaScript reference and guides. Covers language fundamentals, objects, async programming, modules, and browser APIs. Useful for quickly verifying syntax, standard library behavior, and best practices.",
+    "timestamp": 1735257600000,
+    "keywords": ["javascript", "mdn", "docs", "async", "modules"],
+    "metadata": { "domain": "developer.mozilla.org", "favicon": "", "sessionId": "seed" }
+  },
+  {
+    "id": "seed_002",
+    "url": "https://react.dev/learn",
+    "title": "Learn React",
+    "readableText": "The official React documentation for learning components, state, effects, rendering patterns, and how to think in React. Includes practical examples and common pitfalls.",
+    "timestamp": 1735258200000,
+    "keywords": ["react", "components", "state", "hooks", "docs"],
+    "metadata": { "domain": "react.dev", "favicon": "", "sessionId": "seed" }
+  },
+  {
+    "id": "seed_003",
+    "url": "https://vite.dev/guide/",
+    "title": "Vite Guide",
+    "readableText": "Vite documentation covering dev server, build pipeline, environment variables, plugins, and configuration. Helpful when setting up fast local development for modern web apps.",
+    "timestamp": 1735258800000,
+    "keywords": ["vite", "build", "devserver", "config", "env"],
+    "metadata": { "domain": "vite.dev", "favicon": "", "sessionId": "seed" }
+  },
+  {
+    "id": "seed_004",
+    "url": "https://firebase.google.com/docs/auth",
+    "title": "Firebase Authentication Documentation",
+    "readableText": "Firebase Auth docs for enabling sign-in methods, integrating with web apps, handling auth state changes, and securing routes. Includes troubleshooting for common errors like auth/operation-not-allowed.",
+    "timestamp": 1735259400000,
+    "keywords": ["firebase", "auth", "login", "signup", "docs"],
+    "metadata": { "domain": "firebase.google.com", "favicon": "", "sessionId": "seed" }
+  },
+  {
+    "id": "seed_005",
+    "url": "https://tailwindcss.com/docs",
+    "title": "Tailwind CSS Documentation",
+    "readableText": "Tailwind CSS docs for utility classes, layout, typography, responsive design, and theming. Great for building consistent UI quickly without custom CSS.",
+    "timestamp": 1735260000000,
+    "keywords": ["tailwind", "css", "ui", "responsive", "docs"],
+    "metadata": { "domain": "tailwindcss.com", "favicon": "", "sessionId": "seed" }
+  },
+  {
+    "id": "seed_006",
+    "url": "https://www.theguardian.com/world",
+    "title": "World News | The Guardian",
+    "readableText": "A world news page covering current events. Useful for testing news-category clustering and verifying that semantic search finds content by topic.",
+    "timestamp": 1735260600000,
+    "keywords": ["news", "world", "politics", "current", "events"],
+    "metadata": { "domain": "theguardian.com", "favicon": "", "sessionId": "seed" }
+  },
+  {
+    "id": "seed_007",
+    "url": "https://www.allrecipes.com/",
+    "title": "Allrecipes | Food, friends, and recipe inspiration",
+    "readableText": "Recipe home page with cooking ideas and popular dishes. Useful to validate the food/recipes category, and for testing memory snippets and keyword extraction.",
+    "timestamp": 1735261200000,
+    "keywords": ["recipes", "cooking", "food", "ingredients", "dinner"],
+    "metadata": { "domain": "allrecipes.com", "favicon": "", "sessionId": "seed" }
+  },
+  {
+    "id": "seed_008",
+    "url": "https://www.booking.com/",
+    "title": "Booking.com | Official site",
+    "readableText": "Travel booking site for hotels and stays. Useful for testing the travel category and for evaluating semantic queries like 'cheap hotel in tokyo'.",
+    "timestamp": 1735261800000,
+    "keywords": ["travel", "hotels", "booking", "stays", "tourism"],
+    "metadata": { "domain": "booking.com", "favicon": "", "sessionId": "seed" }
+  },
+  {
+    "id": "seed_009",
+    "url": "https://www.amazon.com/",
+    "title": "Amazon.com. Spend less. Smile more.",
+    "readableText": "Ecommerce marketplace. Useful for shopping category clustering and testing searches like 'wireless headphones under 100'.",
+    "timestamp": 1735262400000,
+    "keywords": ["shopping", "ecommerce", "amazon", "products", "deals"],
+    "metadata": { "domain": "amazon.com", "favicon": "", "sessionId": "seed" }
+  },
+  {
+    "id": "seed_010",
+    "url": "https://www.linkedin.com/jobs/",
+    "title": "Jobs | LinkedIn",
+    "readableText": "Job search listings and filters. Useful for testing the jobs category and validating queries like 'frontend engineer roles' even without exact matches.",
+    "timestamp": 1735263000000,
+    "keywords": ["jobs", "career", "linkedin", "search", "roles"],
+    "metadata": { "domain": "linkedin.com", "favicon": "", "sessionId": "seed" }
+  },
+  {
+    "id": "seed_011",
+    "url": "https://www.healthline.com/nutrition",
+    "title": "Nutrition | Healthline",
+    "readableText": "Health and nutrition articles. Useful for health category clustering and semantic searches like 'healthy recipes' and 'protein intake'.",
+    "timestamp": 1735263600000,
+    "keywords": ["health", "nutrition", "wellness", "diet", "fitness"],
+    "metadata": { "domain": "healthline.com", "favicon": "", "sessionId": "seed" }
+  },
+  {
+    "id": "seed_012",
+    "url": "https://github.com/",
+    "title": "GitHub: Where the world builds software",
+    "readableText": "GitHub landing page for repositories, issues, and pull requests. Useful for developer workflow memories and testing semantic queries about code and repos.",
+    "timestamp": 1735264200000,
+    "keywords": ["github", "repositories", "code", "issues", "pull-requests"],
+    "metadata": { "domain": "github.com", "favicon": "", "sessionId": "seed" }
+  }
+]
+
+

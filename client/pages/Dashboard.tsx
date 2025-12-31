@@ -1,8 +1,9 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import {
   Search,
   Sidebar,
   Settings,
+  Bot,
   HelpCircle,
   Loader,
   X,
@@ -15,12 +16,14 @@ import {
   Trash2,
   Globe,
   Info,
-  BarChart3
+  BarChart3,
+  LogOut
 } from "lucide-react";
 import Header from "@/components/Header";
 import { useExtension } from "@/hooks/useExtension";
-import type { MemoryNode } from "@shared/extension-types";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
+import { useAuth } from "@/context/AuthContext";
+import { useNavigate } from "react-router-dom";
 
 interface PageMemory {
   id: string;
@@ -254,6 +257,8 @@ function categorizeUrl(url: string): string {
 
 export default function Dashboard() {
   console.log("Dashboard rendering, Globe is:", Globe);
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -268,6 +273,15 @@ export default function Dashboard() {
   const [analytics, setAnalytics] = useState<any>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
 
+  // Automation agent UI state
+  const [agentGoal, setAgentGoal] = useState("");
+  const [agentRunning, setAgentRunning] = useState(false);
+  const [agentStepLimit, setAgentStepLimit] = useState(12);
+  const [agentAllowlist, setAgentAllowlist] = useState("");
+  const [agentConfirmEachStep, setAgentConfirmEachStep] = useState(true);
+  const [agentLogs, setAgentLogs] = useState<Array<{ ts: number; message: string }>>([]);
+  const agentStopRef = useRef(false);
+
   const {
     isAvailable,
     isChecking,
@@ -278,7 +292,120 @@ export default function Dashboard() {
     updateCaptureSettings,
     getAnalytics,
     sendMessage,
+    executeAction,
   } = useExtension();
+
+  const pushAgentLog = useCallback((message: string) => {
+    setAgentLogs((prev) => [{ ts: Date.now(), message }, ...prev].slice(0, 200));
+  }, []);
+
+  const parseAllowlistDomains = useCallback(() => {
+    return agentAllowlist
+      .split(",")
+      .map((d) => d.trim())
+      .filter(Boolean);
+  }, [agentAllowlist]);
+
+  const stopAgent = useCallback(() => {
+    agentStopRef.current = true;
+    setAgentRunning(false);
+    pushAgentLog("Stopped.");
+  }, [pushAgentLog]);
+
+  const startAgent = useCallback(async () => {
+    if (!agentGoal.trim()) {
+      pushAgentLog("Please enter a task/goal first.");
+      return;
+    }
+    if (!isAvailable) {
+      pushAgentLog("Extension not connected.");
+      return;
+    }
+
+    agentStopRef.current = false;
+    setAgentRunning(true);
+    pushAgentLog(`Started: ${agentGoal.trim()}`);
+
+    const allowlistDomains = parseAllowlistDomains();
+    const history: Array<{ action?: any; result?: any }> = [];
+
+    for (let step = 0; step < Math.max(1, agentStepLimit); step++) {
+      if (agentStopRef.current) break;
+
+      // 1) Snapshot current page (compact)
+      const snapResp = await executeAction<any>({ type: "extract", data: { mode: "page_snapshot", maxChars: 8000, maxLinks: 50 } });
+      const snap = (snapResp as any)?.data?.data || (snapResp as any)?.data || null;
+      if (!snapResp.success || !snap) {
+        pushAgentLog("Failed to extract page snapshot.");
+        break;
+      }
+
+      // 2) Ask server (Gemini) for next step
+      const planResp = await fetch("/api/agent/step", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          goal: agentGoal.trim(),
+          step,
+          allowlistDomains,
+          snapshot: snap,
+          history,
+        }),
+      });
+
+      const planText = await planResp.text().catch(() => "");
+      const planJson = (() => {
+        try {
+          return planText ? JSON.parse(planText) : null;
+        } catch {
+          return null;
+        }
+      })();
+
+      if (!planResp.ok || !planJson?.ok) {
+        const reason = planJson?.reason || planJson?.error || planText || `HTTP ${planResp.status}`;
+        pushAgentLog(`Planning failed: ${String(reason).slice(0, 500)}`);
+        break;
+      }
+
+      if (planJson.done || planJson.action?.type === "finish") {
+        pushAgentLog(planJson.reason || "Done.");
+        break;
+      }
+
+      const action = planJson.action;
+      if (!action?.type) {
+        pushAgentLog("No action returned.");
+        break;
+      }
+
+      pushAgentLog(`Plan: ${action.type}`);
+
+      if (agentConfirmEachStep) {
+        const ok = window.confirm(`Run action: ${action.type}?\n\n${JSON.stringify(action.data || {}, null, 2)}`);
+        if (!ok) {
+          pushAgentLog("User cancelled.");
+          break;
+        }
+      }
+
+      // 3) Execute action in extension
+      const execResp = await executeAction<any>({ type: action.type, data: action.data || {} });
+      history.push({ action, result: execResp });
+
+      if (!execResp.success) {
+        pushAgentLog(`Execution failed: ${execResp.error || "unknown error"}`);
+        break;
+      }
+
+      // Give the page a moment to update after navigation/click
+      await new Promise((r) => setTimeout(r, 900));
+    }
+
+    setAgentRunning(false);
+    agentStopRef.current = false;
+    pushAgentLog("Run ended.");
+  }, [agentGoal, agentStepLimit, agentConfirmEachStep, executeAction, isAvailable, parseAllowlistDomains, pushAgentLog]);
 
   // Debounce search query
   useEffect(() => {
@@ -293,14 +420,59 @@ export default function Dashboard() {
     if (!isAvailable) return;
     
     try {
+      // Always prepare a pages fallback so Smart Search can show data even if semantic search returns empty on reload.
+      const pagesPromise = getAllPages().catch((err) => {
+        console.error("Pages fail:", err);
+        return [];
+      });
+
+      const nodesPromise = debouncedQuery.trim()
+        ? searchMemory(debouncedQuery)
+            .catch((err) => {
+              console.error("Search fail:", err);
+              return [];
+            })
+            .then(async (results) => {
+              if (Array.isArray(results) && results.length > 0) return results;
+              // Fallback: if semantic search returns nothing (e.g., index not ready yet), show all pages.
+              return await pagesPromise;
+            })
+        : pagesPromise;
+
       // Parallelize all initial requests for maximum speed
       const [stats, settings, nodes] = await Promise.all([
-        getStats().catch(err => { console.error("Stats fail:", err); return null; }),
-        getCaptureSettings().catch(err => { console.error("Settings fail:", err); return null; }),
-        debouncedQuery.trim() 
-          ? searchMemory(debouncedQuery).catch(err => { console.error("Search fail:", err); return []; })
-          : getAllPages().catch(err => { console.error("Pages fail:", err); return []; })
+        getStats().catch((err) => {
+          console.error("Stats fail:", err);
+          return null;
+        }),
+        getCaptureSettings().catch((err) => {
+          console.error("Settings fail:", err);
+          return null;
+        }),
+        nodesPromise,
       ]);
+
+      // If still empty, force-seed demo memories and refetch once.
+      let finalNodes = nodes;
+      if (!finalNodes || (Array.isArray(finalNodes) && finalNodes.length === 0)) {
+        try {
+          console.log("Dashboard: No memories found, triggering seed...");
+          const seedResp = await sendMessage<any>({ type: "SEED_MEMORIES", payload: { force: true } } as any);
+          console.log("Dashboard: Seed response:", seedResp);
+          if (seedResp?.success) {
+            console.log("Dashboard: Seed successful, fetching pages...");
+            finalNodes = await getAllPages().catch((err) => {
+              console.error("Dashboard: Failed to fetch pages after seed:", err);
+              return [];
+            });
+            console.log("Dashboard: Fetched", finalNodes?.length || 0, "pages after seed");
+          } else {
+            console.warn("Dashboard: Seed failed:", seedResp?.error);
+          }
+        } catch (err) {
+          console.error("Dashboard: Seed error:", err);
+        }
+      }
 
       if (stats) {
         setPageCount(stats.pageCount);
@@ -311,8 +483,8 @@ export default function Dashboard() {
         setCaptureEnabled(settings.enabled);
       }
 
-      if (nodes && Array.isArray(nodes)) {
-        const formattedMemories: PageMemory[] = nodes.map((node: any) => {
+      if (finalNodes && Array.isArray(finalNodes)) {
+        const formattedMemories: PageMemory[] = finalNodes.map((node: any) => {
           // Generate reason data if not present (for non-search results or missing data)
           let reason = node.reason;
           if (!reason) {
@@ -357,10 +529,11 @@ export default function Dashboard() {
     } catch (err) {
       console.error("Dashboard: Critical failure loading data:", err);
     }
-  }, [getAllPages, getStats, searchMemory, getCaptureSettings, debouncedQuery, isAvailable]);
+  }, [getAllPages, getStats, searchMemory, getCaptureSettings, debouncedQuery, isAvailable, sendMessage]);
 
   // Initial load and reload when query changes - prevent infinite loop
   const [lastQuery, setLastQuery] = useState<string | null>(null);
+  const [initialLoadDone, setInitialLoadDone] = useState(false);
   
   useEffect(() => {
     if (!isAvailable) {
@@ -372,11 +545,19 @@ export default function Dashboard() {
     if (lastQuery === null || debouncedQuery !== lastQuery) {
       setIsLoading(true);
       setLastQuery(debouncedQuery);
-      loadData().finally(() => {
-        setIsLoading(false);
-      });
+      
+      // Add a small delay on initial load to let the extension's seedAlways() complete
+      const delayMs = !initialLoadDone && debouncedQuery === "" ? 500 : 0;
+      const timer = setTimeout(() => {
+        loadData().finally(() => {
+          setIsLoading(false);
+          setInitialLoadDone(true);
+        });
+      }, delayMs);
+      
+      return () => clearTimeout(timer);
     }
-  }, [debouncedQuery, isAvailable, loadData, lastQuery]);
+  }, [debouncedQuery, isAvailable, loadData, lastQuery, initialLoadDone]);
 
   // Load analytics when analytics tab is active - prevent infinite loop
   const [analyticsLoaded, setAnalyticsLoaded] = useState(false);
@@ -403,6 +584,7 @@ export default function Dashboard() {
       setAnalyticsLoaded(false);
     }
   }, [activeTab, isAvailable, getAnalytics, analyticsLoading, analyticsLoaded]);
+
 
   // Separate effect for periodic refresh (only when not searching) - reduced frequency
   useEffect(() => {
@@ -502,6 +684,25 @@ export default function Dashboard() {
       <div className="main-bg" />
       <Header />
 
+      {/* Auth strip (dashboard only) */}
+      <div className="relative z-[101] max-w-7xl mx-auto px-6 lg:px-12 pt-4">
+        <div className="flex items-center justify-end gap-3">
+          <div className="text-xs text-slate-500 dark:text-slate-400">
+            Signed in as <span className="font-bold text-slate-700 dark:text-slate-200">{user?.email || "Unknown"}</span>
+          </div>
+          <button
+            onClick={async () => {
+              await logout();
+              navigate("/login", { replace: true });
+            }}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all text-xs font-bold text-slate-600 dark:text-slate-300 shadow-sm"
+          >
+            <LogOut className="w-4 h-4" />
+            Logout
+          </button>
+        </div>
+      </div>
+
       {!isAvailable && !isChecking && (
         <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[100] w-full max-w-xl px-4">
           <div className="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-2xl flex items-start gap-4 text-amber-800 dark:text-amber-200 shadow-xl">
@@ -551,6 +752,10 @@ export default function Dashboard() {
                   <button onClick={() => { setActiveTab("analytics"); setSelectedCategoryFilter(null); }} className={`w-full flex items-center px-4 py-3 rounded-xl text-sm font-medium transition-all ${activeTab === "analytics" ? "bg-primary text-primary-foreground shadow-sm" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"}`}>
                     <BarChart3 className="w-4 h-4 mr-3" />
                     Analytics
+                  </button>
+                  <button onClick={() => { setActiveTab("agent"); setSelectedCategoryFilter(null); }} className={`w-full flex items-center px-4 py-3 rounded-xl text-sm font-medium transition-all ${activeTab === "agent" ? "bg-primary text-primary-foreground shadow-sm" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"}`}>
+                    <Bot className="w-4 h-4 mr-3" />
+                    Automation Agent
                   </button>
                   <button onClick={() => { setActiveTab("settings"); setSelectedCategoryFilter(null); }} className={`w-full flex items-center px-4 py-3 rounded-xl text-sm font-medium transition-all ${activeTab === "settings" ? "bg-primary text-primary-foreground shadow-sm" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"}`}>
                     <Settings className="w-4 h-4 mr-3" />
@@ -609,8 +814,8 @@ export default function Dashboard() {
                     </p>
                   </div>
                   <div className="flex items-center gap-3">
-                    <button onClick={loadData} className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 transition-all text-slate-500 shadow-sm">
-                      <Loader className={`w-5 h-5 ${isLoading ? "animate-spin text-primary" : ""}`} />
+                    <button onClick={loadData} className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 transition-all text-blue-500 shadow-sm">
+                      Load Data
                     </button>
                     <button onClick={handleExport} className="flex items-center gap-2 px-5 py-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 transition-all text-sm font-bold text-slate-700 dark:text-slate-300 shadow-sm">
                       <Download className="w-4 h-4" />
@@ -641,7 +846,8 @@ export default function Dashboard() {
                   {isLoading && memories.length === 0 ? (
                     <div className="col-span-full py-20 flex flex-col items-center justify-center space-y-4">
                       <Loader className="w-10 h-10 text-primary animate-spin" />
-                      <p className="text-slate-500 font-medium">Loading memories...</p>
+                      <p className="text-slate-500 font-medium">Waiting For You...</p>
+                      <p className="text-slate-500 font-medium">Click on "Load Data" to see the memories</p>
                     </div>
                   ) : filteredMemories.length === 0 ? (
                     <div className="col-span-full py-20 text-center space-y-4">
@@ -1034,6 +1240,129 @@ export default function Dashboard() {
                     <p className="text-slate-500 font-medium">No analytics data available yet. Start browsing to see your insights!</p>
                   </div>
                 )}
+              </div>
+            ) : activeTab === "agent" ? (
+              <div className="space-y-10 animate-in fade-in duration-500 pb-20">
+                <div className="space-y-3">
+                  <h1 className="text-4xl lg:text-5xl font-extrabold tracking-tight text-slate-900 dark:text-white">
+                    Automation <span className="text-primary">Agent.</span>
+                  </h1>
+                  <p className="text-lg text-slate-500 max-w-2xl leading-relaxed">
+                    Uses Gemini (server-side) to plan steps, then executes them via the extension.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  <div className="p-8 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-6">
+                    <div className="space-y-2">
+                      <h3 className="text-xl font-bold text-slate-900 dark:text-white">Task</h3>
+                      <p className="text-sm text-slate-500">Describe what you want to accomplish in the current tab.</p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Goal</label>
+                      <input
+                        type="text"
+                        placeholder='e.g. "Search for wireless headphones under $100 and open 3 options"'
+                        className="w-full px-4 py-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm font-medium shadow-sm focus:outline-none focus:border-primary transition-all placeholder:text-slate-400"
+                        value={agentGoal}
+                        onChange={(e) => setAgentGoal(e.target.value)}
+                        disabled={agentRunning}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Max steps</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={50}
+                          className="w-full px-4 py-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm font-medium shadow-sm focus:outline-none focus:border-primary transition-all"
+                          value={agentStepLimit}
+                          onChange={(e) => setAgentStepLimit(Math.max(1, Math.min(50, Number(e.target.value || 12))))}
+                          disabled={agentRunning}
+                        />
+                      </div>
+
+                      <label className="flex items-center justify-between p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800">
+                        <div>
+                          <div className="text-sm font-bold text-slate-900 dark:text-white">Confirm each step</div>
+                          <div className="text-xs text-slate-500">Recommended for safety.</div>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={agentConfirmEachStep}
+                          onChange={(e) => setAgentConfirmEachStep(e.target.checked)}
+                          disabled={agentRunning}
+                        />
+                      </label>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Allowlist domains (comma separated)</label>
+                      <input
+                        type="text"
+                        placeholder="amazon.com, bestbuy.com"
+                        className="w-full px-4 py-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm font-medium shadow-sm focus:outline-none focus:border-primary transition-all placeholder:text-slate-400"
+                        value={agentAllowlist}
+                        onChange={(e) => setAgentAllowlist(e.target.value)}
+                        disabled={agentRunning}
+                      />
+                      <div className="text-xs text-slate-500">Leave empty to allow any domain (except restricted schemes).</div>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={startAgent}
+                        disabled={agentRunning || !isAvailable}
+                        className="px-5 py-3 rounded-xl bg-primary text-primary-foreground font-bold text-sm shadow-lg hover:opacity-90 transition-all disabled:opacity-60"
+                      >
+                        Start
+                      </button>
+                      <button
+                        onClick={stopAgent}
+                        disabled={!agentRunning}
+                        className="px-5 py-3 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all text-sm font-bold text-slate-600 dark:text-slate-400 disabled:opacity-60"
+                      >
+                        Stop
+                      </button>
+                      <div className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                        Status: <span className="text-slate-700 dark:text-slate-200">{agentRunning ? "running" : "idle"}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="p-8 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-1">
+                        <h3 className="text-xl font-bold text-slate-900 dark:text-white">Logs</h3>
+                        <p className="text-sm text-slate-500">Newest first.</p>
+                      </div>
+                      <button
+                        onClick={() => setAgentLogs([])}
+                        className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all text-xs font-bold text-slate-600 dark:text-slate-400"
+                      >
+                        Clear
+                      </button>
+                    </div>
+
+                    <div className="max-h-[520px] overflow-y-auto space-y-2">
+                      {agentLogs.length === 0 ? (
+                        <div className="py-10 text-center text-slate-500">No logs yet.</div>
+                      ) : (
+                        agentLogs.map((l, idx) => (
+                          <div key={idx} className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800">
+                            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                              {new Date(l.ts).toLocaleTimeString()}
+                            </div>
+                            <div className="text-sm font-medium text-slate-700 dark:text-slate-200 mt-1">{l.message}</div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
             ) : (
               <div className="space-y-10 animate-in fade-in duration-500">

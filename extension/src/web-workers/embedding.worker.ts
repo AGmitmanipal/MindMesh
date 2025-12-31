@@ -149,8 +149,8 @@ async function generateWASMEmbedding(text: string): Promise<number[]> {
       normalize: true,
     });
 
-    // Convert tensor to array
-    const embedding = Array.from(output.data);
+    // Convert tensor to a numeric array (types can be loose depending on the runtime/model wrapper)
+    const embedding = Array.from(output.data as Iterable<unknown>).map((v) => Number(v));
     
     // Ensure it's exactly 384 dimensions (all-MiniLM-L6-v2 output)
     if (embedding.length !== 384) {

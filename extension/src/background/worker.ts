@@ -12,23 +12,86 @@ import { activityInsightsService } from "../services/activity-insights";
 import { analyticsService } from "../services/analytics-service";
 import { shortcutGenerator } from "../services/shortcut-generator";
 import { actionExecutor } from "../services/action-executor";
-import { autonomousBrowsingAgent } from "../services/autonomous-browsing-agent";
 import { semanticGraphBuilder } from "../utils/semantic-graph";
 import { generateEmbedding } from "../utils/embedding";
 import { extractKeywords } from "@/lib/text-utils";
 import type { ExtensionMessage, MemoryNode, CaptureSettings } from "@shared/extension-types";
+import seedMemories from "../data/seed-memories.json";
 
 // Track captured URLs in current session to prevent duplicates
 const sessionCaptured = new Map<string, number>(); // URL -> timestamp
 
 // Ensure storage is ready before handling messages
 let storageReady = false;
-cortexStorage.ready().then(() => {
+let seedingComplete = false;
+
+cortexStorage.ready().then(async () => {
   storageReady = true;
   console.log("Cortex: Storage initialized and ready");
+  // Always upsert seed memories on startup (best-effort). This keeps a baseline dataset visible.
+  try {
+    await seedAlways();
+    seedingComplete = true;
+    console.log("Cortex: Seed memories completed");
+  } catch (e) {
+    console.warn("Cortex: Seed memories failed", e);
+    seedingComplete = true; // Mark complete even if it fails so messages can be processed
+  }
 }).catch(err => {
   console.error("Cortex: Storage initialization failed", err);
 });
+
+async function seedAlways(): Promise<void> {
+  try {
+    const items = (seedMemories as any[]) || [];
+    if (items.length === 0) {
+      console.warn("Cortex: seedAlways: No seed memories found in JSON");
+      return;
+    }
+
+    const baseNow = Date.now();
+    console.log(`Cortex: Upserting ${items.length} seed memory nodes`);
+
+    // Make seed nodes appear near the top by refreshing their timestamps each startup.
+    // This does NOT delete user data; it only overwrites seed_* ids.
+    for (let i = 0; i < items.length; i++) {
+      const raw = items[i];
+      try {
+        const node: MemoryNode = {
+          id: String(raw.id),
+          url: String(raw.url),
+          title: String(raw.title),
+          readableText: String(raw.readableText || ""),
+          timestamp: baseNow - (items.length - i) * 1000,
+          keywords: Array.isArray(raw.keywords) ? raw.keywords.map(String) : extractKeywords(String(raw.readableText || ""), String(raw.title || "")),
+          metadata: {
+            domain: String(raw.metadata?.domain || ""),
+            favicon: String(raw.metadata?.favicon || ""),
+            sessionId: String(raw.metadata?.sessionId || "seed"),
+          },
+        };
+
+        const embeddingResult = generateEmbedding(node.readableText, node.title, node.keywords);
+        node.embedding = { vector: embeddingResult.vector, model: embeddingResult.model, timestamp: baseNow };
+
+        await Promise.all([cortexStorage.addMemoryNode(node), cortexStorage.storeEmbedding(node.id, node.embedding)]);
+        semanticGraphBuilder.addNode(node, node.embedding).catch(console.error);
+        console.log(`Cortex: Seeded memory ${i + 1}/${items.length}: ${node.title}`);
+      } catch (nodeError) {
+        console.error(`Cortex: Failed to seed memory ${i + 1}/${items.length}:`, nodeError);
+      }
+    }
+
+    const stats = await cortexStorage.getStats();
+    console.log(`Cortex: Seed memories loaded. Total pages: ${stats.pageCount}`);
+  } catch (e) {
+    // Log full error for debugging
+    console.error("Cortex: seedAlways error:", e);
+    if (e instanceof Error) {
+      console.error("Cortex: seedAlways error stack:", e.stack);
+    }
+  }
+}
 
 // Log initialization
 console.log("Cortex: Background worker script loaded");
@@ -71,6 +134,12 @@ const messageHandler = (message: ExtensionMessage, sender: chrome.runtime.Messag
 
     try {
       switch (message.type) {
+        case "SEED_MEMORIES": {
+          await seedAlways();
+          const stats = await cortexStorage.getStats();
+          return { success: true, data: { pageCount: stats.pageCount } };
+        }
+
         case "PING": {
           return { success: true, version: "0.1.0" };
         }
@@ -177,6 +246,21 @@ const messageHandler = (message: ExtensionMessage, sender: chrome.runtime.Messag
         }
 
         case "GET_ALL_PAGES": {
+          // Wait for seeding to complete on first load to ensure seed memories are available
+          if (!seedingComplete) {
+            console.log("Cortex: GET_ALL_PAGES waiting for seeding to complete...");
+            let waitCount = 0;
+            while (!seedingComplete && waitCount < 30) { // Wait up to 3 seconds
+              await new Promise(r => setTimeout(r, 100));
+              waitCount++;
+            }
+            if (!seedingComplete) {
+              console.warn("Cortex: Seeding did not complete in time, returning what we have");
+            } else {
+              console.log("Cortex: Seeding complete, proceeding with GET_ALL_PAGES");
+            }
+          }
+          
           const pages = await cortexStorage.getAllMemoryNodes(message.payload.limit);
           // Only send what's needed for the dashboard list to save bandwidth and speed up communication
           const minimalPages = pages.map(page => ({
@@ -194,6 +278,16 @@ const messageHandler = (message: ExtensionMessage, sender: chrome.runtime.Messag
         }
 
         case "GET_STATS": {
+          // Wait for seeding to complete on first load
+          if (!seedingComplete) {
+            console.log("Cortex: GET_STATS waiting for seeding to complete...");
+            let waitCount = 0;
+            while (!seedingComplete && waitCount < 30) { // Wait up to 3 seconds
+              await new Promise(r => setTimeout(r, 100));
+              waitCount++;
+            }
+          }
+          
           const stats = await cortexStorage.getStats();
           console.log("Cortex: GET_STATS returning", stats);
           return { success: true, data: stats };
@@ -304,49 +398,6 @@ const messageHandler = (message: ExtensionMessage, sender: chrome.runtime.Messag
         case "EXECUTE_ACTION": {
           const result = await actionExecutor.execute(message.payload.action);
           return { success: true, data: result };
-        }
-
-        // --- Autonomous browsing agent ---
-        case "GET_AGENT_SETTINGS": {
-          const settings = await cortexStorage.getAgentSettings();
-          return { success: true, data: settings };
-        }
-
-        case "UPDATE_AGENT_SETTINGS": {
-          await cortexStorage.updateAgentSettings(message.payload);
-          const settings = await cortexStorage.getAgentSettings();
-          return { success: true, data: settings };
-        }
-
-        case "GET_AGENT_STATUS": {
-          return { success: true, data: autonomousBrowsingAgent.getStatus() };
-        }
-
-        case "GET_AGENT_LOGS": {
-          const runId = message.payload.runId;
-          const limit = message.payload.limit ?? 200;
-          const logs = await cortexStorage.getAgentLogs(runId, limit);
-          return { success: true, data: logs };
-        }
-
-        case "START_AUTONOMOUS_BROWSING": {
-          const status = await autonomousBrowsingAgent.start(
-            message.payload.goal,
-            message.payload.startUrl,
-            message.payload.tabId
-          );
-          return { success: true, data: status };
-        }
-
-        case "STOP_AUTONOMOUS_BROWSING": {
-          const status = await autonomousBrowsingAgent.stop(message.payload?.runId);
-          return { success: true, data: status };
-        }
-
-        case "AGENT_JS_ERROR": {
-          // Forward to agent (best-effort logging). This is intentionally lightweight.
-          await autonomousBrowsingAgent.onJsError(message.payload);
-          return { success: true };
         }
 
         default:

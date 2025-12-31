@@ -7,10 +7,24 @@
  * - Adds timeouts, retries, and simple waits to make navigation deterministic.
  */
 
-import type { AgentDomSnapshot } from "@shared/extension-types";
-
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function isRestrictedUrl(url: string): boolean {
+  // These schemes / origins are not scriptable by extensions and will cause sendMessage/executeScript failures.
+  const u = (url || "").toLowerCase();
+  return (
+    u.startsWith("chrome://") ||
+    u.startsWith("chrome-extension://") ||
+    u.startsWith("edge://") ||
+    u.startsWith("about:") ||
+    u.startsWith("file://") ||
+    u.startsWith("view-source:") ||
+    u.startsWith("chromewebstore.google.com/") ||
+    u.startsWith("https://chromewebstore.google.com/") ||
+    u.startsWith("https://chrome.google.com/webstore")
+  );
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
@@ -26,6 +40,27 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
         reject(e);
       });
   });
+}
+
+async function withRetries<T>(
+  fn: () => Promise<T>,
+  retries: number,
+  label: string,
+  baseDelayMs: number = 250
+): Promise<T> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } catch (e) {
+      attempt++;
+      if (attempt > retries) throw e;
+      // Simple linear backoff to avoid hammering the page/extension APIs
+      await delay(baseDelayMs * attempt);
+      // Best-effort debug signal in extension devtools
+      console.warn(`BrowserController: retrying ${label} (attempt ${attempt}/${retries})`, e);
+    }
+  }
 }
 
 export class BrowserController {
@@ -50,7 +85,7 @@ export class BrowserController {
   async waitForNavigationComplete(tabId: number, timeoutMs: number): Promise<void> {
     return await withTimeout(
       new Promise<void>((resolve) => {
-        const listener = (updatedTabId: number, info: chrome.tabs.TabChangeInfo) => {
+        const listener = (updatedTabId: number, info: chrome.tabs.OnUpdatedInfo) => {
           if (updatedTabId !== tabId) return;
           if (info.status === "complete") {
             chrome.tabs.onUpdated.removeListener(listener);
@@ -64,28 +99,44 @@ export class BrowserController {
     );
   }
 
-  async navigate(tabId: number, url: string, timeoutMs: number): Promise<void> {
-    await chrome.tabs.update(tabId, { url });
-    await this.waitForNavigationComplete(tabId, timeoutMs);
+  async navigate(tabId: number, url: string, timeoutMs: number, retries: number = 0): Promise<void> {
+    if (isRestrictedUrl(url)) {
+      throw new Error(`Blocked navigation to restricted URL: ${url}`);
+    }
+    await withRetries(
+      async () => {
+        await chrome.tabs.update(tabId, { url });
+        await this.waitForNavigationComplete(tabId, timeoutMs);
+      },
+      retries,
+      "navigate"
+    );
   }
 
   async executeScript<T>(
     tabId: number,
     func: (...args: any[]) => T,
     args: any[] = [],
-    timeoutMs: number = 15000
+    timeoutMs: number = 15000,
+    retries: number = 0
   ): Promise<T> {
-    const run = async () => {
-      const results = await chrome.scripting.executeScript({
-        target: { tabId },
-        func,
-        args,
-      });
-      // In MV3, executeScript returns array of results (one per frame). We default to top frame.
-      const first = results?.[0]?.result as T;
-      return first;
-    };
-    return await withTimeout(run(), timeoutMs, "executeScript");
+    return await withRetries(
+      async () => {
+        const run = async () => {
+          const results = await chrome.scripting.executeScript({
+            target: { tabId },
+            func,
+            args,
+          });
+          // In MV3, executeScript returns array of results (one per frame). We default to top frame.
+          const first = results?.[0]?.result as T;
+          return first;
+        };
+        return await withTimeout(run(), timeoutMs, "executeScript");
+      },
+      retries,
+      "executeScript"
+    );
   }
 
   async waitForSelector(tabId: number, selector: string, timeoutMs: number, pollMs: number = 250): Promise<boolean> {
@@ -103,7 +154,7 @@ export class BrowserController {
     return false;
   }
 
-  async click(tabId: number, selector: string, timeoutMs: number): Promise<boolean> {
+  async click(tabId: number, selector: string, timeoutMs: number, retries: number = 0): Promise<boolean> {
     return await this.executeScript<boolean>(
       tabId,
       (sel: string) => {
@@ -116,11 +167,19 @@ export class BrowserController {
         return true;
       },
       [selector],
-      timeoutMs
+      timeoutMs,
+      retries
     );
   }
 
-  async type(tabId: number, selector: string, text: string, timeoutMs: number, clearFirst: boolean = true): Promise<boolean> {
+  async type(
+    tabId: number,
+    selector: string,
+    text: string,
+    timeoutMs: number,
+    clearFirst: boolean = true,
+    retries: number = 0
+  ): Promise<boolean> {
     return await this.executeScript<boolean>(
       tabId,
       (sel: string, value: string, clear: boolean) => {
@@ -136,11 +195,12 @@ export class BrowserController {
         return true;
       },
       [selector, text, clearFirst],
-      timeoutMs
+      timeoutMs,
+      retries
     );
   }
 
-  async fillForm(tabId: number, fields: Record<string, string>, timeoutMs: number): Promise<void> {
+  async fillForm(tabId: number, fields: Record<string, string>, timeoutMs: number, retries: number = 0): Promise<void> {
     await this.executeScript<void>(
       tabId,
       (f: Record<string, string>) => {
@@ -153,17 +213,11 @@ export class BrowserController {
         });
       },
       [fields],
-      timeoutMs
+      timeoutMs,
+      retries
     );
   }
 
-  async extractDomSnapshot(tabId: number, timeoutMs: number): Promise<AgentDomSnapshot> {
-    const run = async () => {
-      const response = await chrome.tabs.sendMessage(tabId, { type: "AGENT_EXTRACT_DOM" });
-      return response as AgentDomSnapshot;
-    };
-    return await withTimeout(run(), timeoutMs, "extractDomSnapshot");
-  }
 }
 
 export const browserController = new BrowserController();

@@ -35,10 +35,28 @@ It's easy to verify Cortex is active:
 pnpm install
 ```
 
+### 1.1 (Optional) Enable the Automation Agent (Gemini)
+1. Copy `ENV.example` to `.env`
+2. Set `GEMINI_API_KEY` in `.env`
+
 ### 2. Start the Dashboard
 ```bash
 pnpm dev
 ```
+
+## 🔐 Firebase Authentication (Email/Password)
+
+This app uses Firebase v9+ modular SDK for auth.
+
+Create a `.env` file in the project root (same folder as `package.json`) and set:
+
+- `VITE_FIREBASE_API_KEY`
+- `VITE_FIREBASE_AUTH_DOMAIN`
+- `VITE_FIREBASE_PROJECT_ID`
+- `VITE_FIREBASE_STORAGE_BUCKET`
+- `VITE_FIREBASE_MESSAGING_SENDER_ID`
+- `VITE_FIREBASE_APP_ID`
+- `VITE_FIREBASE_MEASUREMENT_ID` (optional)
 
 ### 3. Build the Extension
 ```bash
