@@ -37,11 +37,34 @@ function deterministicPlanner(params: {
     snapshot: unknown;
     history: unknown[];
 }) {
-    const goal = (params.goal || "").toString().toLowerCase();
+    const goalRaw = (params.goal || "").toString().trim();
+    const goal = goalRaw.toLowerCase();
 
-    // Simple heuristics for common browser automation goals.
-    // 1) Search queries: "search for X" or "find X"
-    const searchMatch = goal.match(/(?:search for|find)\s+(.{3,})/i);
+    // 1) Direct URL or hostname anywhere in the goal -> open it
+    const urlRegex = /(?:https?:\/\/[^\s]+|(?:www\.)?[a-z0-9.-]+\.[a-z]{2,}(?:\/[^\s]*)?)/i;
+    const urlFound = goalRaw.match(urlRegex);
+    if (urlFound) {
+        let url = urlFound[0];
+        if (!/^https?:\/\//i.test(url)) {
+            url = `https://${url}`;
+        }
+        return { done: false, action: { type: "open_tab", data: { url } } };
+    }
+
+    // 2) Commands like "go to X", "visit X", "navigate to X", "open X"
+    const verbMatch = goal.match(/^(?:go to|visit|navigate to|open|visit the|open the)\s+(.{2,})/i);
+    if (verbMatch) {
+        const target = verbMatch[1].trim();
+        const tUrl = (target.match(urlRegex) || [target])[0];
+        let url = tUrl;
+        if (!/^https?:\/\//i.test(url)) {
+            url = `https://${url}`;
+        }
+        return { done: false, action: { type: "open_tab", data: { url } } };
+    }
+
+    // 3) Search queries: "search for X" or "find X" or "search X"
+    const searchMatch = goal.match(/(?:search for|find|search)\s+(.{2,})/i);
     if (searchMatch) {
         const q = encodeURIComponent(searchMatch[1].trim());
         return {
@@ -53,16 +76,19 @@ function deterministicPlanner(params: {
         };
     }
 
-    // 2) Open URL: "open example.com" or "open the homepage"
-    const openMatch = goal.match(/open\s+(https?:\/\/)?([\w.-]+)(\/.+)?/i);
-    if (openMatch) {
-        const host = openMatch[2];
-        const path = openMatch[3] || "";
-        const url = openMatch[1] ? `https://${host}${path}` : `https://${host}${path}`;
-        return { done: false, action: { type: "open_tab", data: { url } } };
+    // 4) Price-filtered product search, e.g. "headphones under 5000 rupees"
+    const priceMatch = goal.match(/(.{3,}?)\s+(?:under|below)\s+(\d{2,}(?:,\d{3})*)(?:\s*(rupees|inr|rs)?)?/i);
+    if (priceMatch) {
+        const item = encodeURIComponent(priceMatch[1].trim());
+        const price = priceMatch[2].replace(/,/g, "");
+        const q = encodeURIComponent(`${item} under ${price} rupees`);
+        return {
+            done: false,
+            action: { type: "open_tab", data: { url: `https://www.google.com/search?q=${q}` } },
+        };
     }
 
-    // 3) Fallback: finish with reason but include the goal for debugging.
+    // 5) Fallback: finish with reason but include the goal for debugging.
     return {
         done: true,
         action: { type: "finish", data: { reason: "deterministic-planner: no matching heuristic", goal: params.goal } },
